@@ -16,12 +16,12 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fix Fonts, WebView Context & Manifest
+      - name: Fix Code, Google Login, Colors & Insets
         run: |
           python3 - << 'EOF'
           import glob, re, os
 
-          # 1. Создаем экран перехвата ошибок (на всякий случай)
+          # 1. Экран перехвата ошибок (на случай краша)
           crash_dir = "app/src/main/java/com/slick/browser"
           os.makedirs(crash_dir, exist_ok=True)
           with open(os.path.join(crash_dir, "CrashCatcher.kt"), "w", encoding="utf-8") as f:
@@ -70,7 +70,7 @@ jobs:
           }
           ''')
 
-          # 2. Чиним AndroidManifest.xml (убираем сломанный preloaded_fonts и ставим тему)
+          # 2. Чиним AndroidManifest.xml
           for mpath in glob.glob("app/src/main/**/AndroidManifest.xml", recursive=True):
               with open(mpath, "r", encoding="utf-8") as f:
                   m = f.read()
@@ -91,7 +91,7 @@ jobs:
               with open(mpath, "w", encoding="utf-8") as f:
                   f.write(m)
 
-          # 3. Чиним Kotlin-файлы
+          # 3. Прокачиваем Kotlin-файлы
           for path in glob.glob("app/src/main/**/*.kt", recursive=True):
               if "CrashCatcher.kt" in path:
                   continue
@@ -104,39 +104,50 @@ jobs:
               code = code.replace("WebViewClient.ERROR_SSL_HANDSHAKE", "-11")
               code = code.replace("ERROR_SSL_HANDSHAKE", "-11")
 
-              # ГЛАВНЫЙ ФИКС #1: В SlickTheme.kt заменяем падающий шрифт с R.array на встроенный системный Monospace!
+              # Шрифт в SlickTheme.kt
               if "SlickTheme.kt" in path:
-                  code = re.sub(
-                      r'val\s+JetBrainsMonoFamily\s*=\s*FontFamily\s*\(.*?\n\)',
-                      'val JetBrainsMonoFamily = FontFamily.Monospace',
-                      code,
-                      flags=re.DOTALL
-                  )
-                  # На случай если там однострочная запись или провайдер:
                   code = re.sub(r'R\.array\.[a-zA-Z0-9_]+', '0', code)
-                  if "GoogleFont.Provider(" in code:
-                      code = re.sub(r'val\s+JetBrainsMonoFamily\s*=[^\n]+(\n[^\n]+)*?FontFamily\([^)]*\)', 'val JetBrainsMonoFamily = FontFamily.Monospace', code)
+                  code = re.sub(
+                      r'val\s+JetBrainsMonoFamily\s*=[\s\S]*?\)\s*\)',
+                      'val JetBrainsMonoFamily = FontFamily.Monospace',
+                      code
+                  )
 
+              # Убираем кислотные цвета в LiquidFogEngine.kt -> делаем стильный серебристо-графитовый дым
+              if "LiquidFogEngine.kt" in path:
+                  code = re.sub(
+                      r'Color\(0xFF[0-9A-Fa-f]{6}\)',
+                      'Color(0xFF9E9EA8)',
+                      code
+                  )
+
+              # Включаем строгий МОНО-стиль по умолчанию и 100% масштаб текста в SlickBrowserState.kt
+              if "SlickBrowserState.kt" in path:
+                  code = re.sub(r'isMonoLogo\s*by\s*mutableStateOf\(\s*false\s*\)', 'isMonoLogo by mutableStateOf(true)', code)
+                  code = re.sub(r'getBoolean\("mono_logo",\s*false\)', 'getBoolean("mono_logo", true)', code)
+                  code = re.sub(r'textZoomPercent\s*by\s*mutableIntStateOf\(\s*200\s*\)', 'textZoomPercent by mutableIntStateOf(100)', code)
+                  code = re.sub(r'desktopMode\s*by\s*mutableStateOf\(\s*true\s*\)', 'desktopMode by mutableStateOf(false)', code)
+
+              # Чиним вход в аккаунт Google (User-Agent без "; wv" + ThirdPartyCookies) в WebViewPoolManager.kt
+              if "WebViewPoolManager.kt" in path:
+                  if "import android.webkit.CookieManager" not in code:
+                      code = re.sub(r'(package\s+[^\n]+\n)', r'\1import android.webkit.CookieManager\n', code, count=1)
+                  code = re.sub(
+                      r'(javaScriptEnabled\s*=\s*true)',
+                      r'\1\n                domStorageEnabled = true\n                userAgentString = userAgentString.replace("; wv", "").replace(Regex("Version/\\\\d+\\\\.\\\\d+\\\\s*"), "")',
+                      code
+                  )
+                  code = re.sub(
+                      r'(WebView\(context\)\.apply\s*\{)',
+                      r'\1\n            CookieManager.getInstance().setAcceptCookie(true)\n            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)',
+                      code
+                  )
+
+              # Чиним контекст и убираем наезд на часы/батарею в MainActivity.kt
               if "MainActivity.kt" in path:
-                  # ГЛАВНЫЙ ФИКС #2: Передаем this вместо applicationContext в WebViewPoolManager!
                   code = code.replace("WebViewPoolManager(applicationContext,", "WebViewPoolManager(this,")
-
-                  code = re.sub(r'import\s+.*PlatformImeOptions.*\n', '', code)
-                  code = re.sub(r'^.*PlatformImeOptions.*$', lambda m: '' if 'platformImeOptions' not in m.group(0) else m.group(0), code, flags=re.MULTILINE)
-                  lines = code.splitlines()
-                  new_lines = []
-                  for line in lines:
-                      if "platformImeOptions" in line and "=" in line:
-                          stripped = line.rstrip()
-                          if stripped.endswith("),"):
-                              new_lines.append("platformImeOptions = null),")
-                          elif stripped.endswith(","):
-                              new_lines.append("platformImeOptions = null,")
-                          else:
-                              new_lines.append("platformImeOptions = null")
-                      else:
-                          new_lines.append(line)
-                  code = "\n".join(new_lines)
+                  code = code.replace("WindowCompat.setDecorFitsSystemWindows(window, false)", "WindowCompat.setDecorFitsSystemWindows(window, true)\n        window.statusBarColor = android.graphics.Color.BLACK\n        window.navigationBarColor = android.graphics.Color.BLACK")
+                  code = re.sub(r'import\s+.*PlatformImeOptions.*\n', 'import androidx.compose.ui.text.input.PlatformImeOptions\n', code)
 
               with open(path, "w", encoding="utf-8") as f:
                   f.write(code)
