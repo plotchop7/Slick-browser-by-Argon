@@ -23,7 +23,7 @@ import com.slick.browser.R
 private val googleFontProvider = GoogleFont.Provider(
     providerAuthority = "com.google.android.gms.fonts",
     providerPackage = "com.google.android.gms",
-    certificates = R.array.com_google_android_gms_fonts_certs
+    com.slick.browser.R.xml.font_certs
 )
 
 private val jetBrainsMonoGoogleFont = GoogleFont("JetBrains Mono")
