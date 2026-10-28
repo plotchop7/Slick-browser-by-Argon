@@ -1,5 +1,6 @@
 package com.slick.browser.ui.effects
 
+import androidx.compose.ui.graphics.nativeCanvas
 import android.graphics.BlurMaskFilter
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
