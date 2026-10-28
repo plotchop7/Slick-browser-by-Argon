@@ -188,7 +188,7 @@ class WebViewPoolManager(
             WebViewClient.ERROR_HOST_LOOKUP -> "ERR_NAME_NOT_RESOLVED"
             WebViewClient.ERROR_CONNECT -> "ERR_INTERNET_DISCONNECTED"
             WebViewClient.ERROR_TIMEOUT -> "ERR_CONNECTION_TIMED_OUT"
-            WebViewClient.ERROR_SSL_HANDSHAKE -> "ERR_SSL_PROTOCOL_ERROR"
+            WebViewClient.ERROR_FAILED_SSL_HANDSHAKE -> "ERR_SSL_PROTOCOL_ERROR"
             WebViewClient.ERROR_UNSUPPORTED_SCHEME -> "ERR_UNKNOWN_URL_SCHEME"
             else -> "ERR_INTERNET_DISCONNECTED"
         }
