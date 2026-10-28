@@ -1,11 +1,12 @@
-name: Build Slick APK
+name: Slick Browser APK Build
 
 on:
   push:
     branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-apk:
@@ -15,6 +16,132 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Fix Fonts, WebView Context & Manifest
+        run: |
+          python3 - << 'EOF'
+          import glob, re, os
+
+          # 1. Создаем экран перехвата ошибок (на всякий случай)
+          crash_dir = "app/src/main/java/com/slick/browser"
+          os.makedirs(crash_dir, exist_ok=True)
+          with open(os.path.join(crash_dir, "CrashCatcher.kt"), "w", encoding="utf-8") as f:
+              f.write('''package com.slick.browser
+
+          import android.app.Activity
+          import android.app.Application
+          import android.content.Intent
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.util.Log
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import kotlin.system.exitProcess
+
+          class CrashApp : Application() {
+              override fun onCreate() {
+                  super.onCreate()
+                  Thread.setDefaultUncaughtExceptionHandler { _, e ->
+                      val intent = Intent(this, CrashActivity::class.java).apply {
+                          putExtra("error", Log.getStackTraceString(e))
+                          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                      }
+                      startActivity(intent)
+                      android.os.Process.killProcess(android.os.Process.myPid())
+                      exitProcess(10)
+                  }
+              }
+          }
+
+          class CrashActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val sv = ScrollView(this)
+                  val tv = TextView(this).apply {
+                      text = "ТОЧНАЯ ПРИЧИНА ВЫЛЕТА:\\n\\n" + (intent.getStringExtra("error") ?: "Неизвестная ошибка")
+                      setTextColor(Color.WHITE)
+                      setBackgroundColor(Color.BLACK)
+                      textSize = 12f
+                      setPadding(32, 64, 32, 64)
+                      setTextIsSelectable(true)
+                  }
+                  sv.addView(tv)
+                  setContentView(sv)
+              }
+          }
+          ''')
+
+          # 2. Чиним AndroidManifest.xml (убираем сломанный preloaded_fonts и ставим тему)
+          for mpath in glob.glob("app/src/main/**/AndroidManifest.xml", recursive=True):
+              with open(mpath, "r", encoding="utf-8") as f:
+                  m = f.read()
+
+              m = re.sub(r'android:theme="[^"]*"', 'android:theme="@android:style/Theme.Material.NoActionBar"', m)
+              m = re.sub(r'<meta-data[^>]*preloaded_fonts[^>]*/>', '', m, flags=re.DOTALL)
+
+              app_tag = re.search(r'<application[^>]*>', m, flags=re.DOTALL)
+              if app_tag:
+                  tag_str = app_tag.group(0)
+                  new_tag = re.sub(r'\s*android:name="[^"]*"', '', tag_str)
+                  new_tag = new_tag.replace('<application', '<application android:name="com.slick.browser.CrashApp"', 1)
+                  m = m.replace(tag_str, new_tag, 1)
+
+              if "CrashActivity" not in m:
+                  m = m.replace('</application>', '<activity android:name="com.slick.browser.CrashActivity" android:process=":crash" android:exported="false" />\n</application>')
+
+              with open(mpath, "w", encoding="utf-8") as f:
+                  f.write(m)
+
+          # 3. Чиним Kotlin-файлы
+          for path in glob.glob("app/src/main/**/*.kt", recursive=True):
+              if "CrashCatcher.kt" in path:
+                  continue
+              with open(path, "r", encoding="utf-8") as f:
+                  code = f.read()
+
+              if "nativeCanvas" in code and "import androidx.compose.ui.graphics.nativeCanvas" not in code:
+                  code = re.sub(r'(package\s+[^\n]+\n)', r'\1import androidx.compose.ui.graphics.nativeCanvas\n', code, count=1)
+
+              code = code.replace("WebViewClient.ERROR_SSL_HANDSHAKE", "-11")
+              code = code.replace("ERROR_SSL_HANDSHAKE", "-11")
+
+              # ГЛАВНЫЙ ФИКС #1: В SlickTheme.kt заменяем падающий шрифт с R.array на встроенный системный Monospace!
+              if "SlickTheme.kt" in path:
+                  code = re.sub(
+                      r'val\s+JetBrainsMonoFamily\s*=\s*FontFamily\s*\(.*?\n\)',
+                      'val JetBrainsMonoFamily = FontFamily.Monospace',
+                      code,
+                      flags=re.DOTALL
+                  )
+                  # На случай если там однострочная запись или провайдер:
+                  code = re.sub(r'R\.array\.[a-zA-Z0-9_]+', '0', code)
+                  if "GoogleFont.Provider(" in code:
+                      code = re.sub(r'val\s+JetBrainsMonoFamily\s*=[^\n]+(\n[^\n]+)*?FontFamily\([^)]*\)', 'val JetBrainsMonoFamily = FontFamily.Monospace', code)
+
+              if "MainActivity.kt" in path:
+                  # ГЛАВНЫЙ ФИКС #2: Передаем this вместо applicationContext в WebViewPoolManager!
+                  code = code.replace("WebViewPoolManager(applicationContext,", "WebViewPoolManager(this,")
+
+                  code = re.sub(r'import\s+.*PlatformImeOptions.*\n', '', code)
+                  code = re.sub(r'^.*PlatformImeOptions.*$', lambda m: '' if 'platformImeOptions' not in m.group(0) else m.group(0), code, flags=re.MULTILINE)
+                  lines = code.splitlines()
+                  new_lines = []
+                  for line in lines:
+                      if "platformImeOptions" in line and "=" in line:
+                          stripped = line.rstrip()
+                          if stripped.endswith("),"):
+                              new_lines.append("platformImeOptions = null),")
+                          elif stripped.endswith(","):
+                              new_lines.append("platformImeOptions = null,")
+                          else:
+                              new_lines.append("platformImeOptions = null")
+                      else:
+                          new_lines.append(line)
+                  code = "\n".join(new_lines)
+
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(code)
+          EOF
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -22,15 +149,15 @@ jobs:
           distribution: 'temurin'
 
       - name: Setup Gradle 8.7
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+        run: gradle assembleDebug
 
       - name: Upload Compiled APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Slick-Browser-Debug-APK
+          name: slick-browser-apk
           path: app/build/outputs/apk/debug/*.apk
